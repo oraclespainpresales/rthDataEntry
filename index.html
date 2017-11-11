@@ -1,0 +1,1159 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <link rel="stylesheet" href="./codebase/webix.css" type="text/css" media="screen" charset="utf-8">
+    <script src="./codebase/webix.js" type="text/javascript" charset="utf-8"></script>
+    <title>Realtime Healthcare Data Entry</title>
+  </head>
+  <style>
+    .smallHeader {
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .midHeader {
+      font-size: 20px;
+      font-weight: bold;
+    }
+    .bold {
+      font-weight: bold;
+    }
+    .topHeader {
+      font-size: 25px;
+      font-weight: bold;
+      color: white;
+      background-color: MediumOrchid;
+      vertical-align: sub;
+    }
+    .topHeaderRight {
+      font-size: 25px;
+      font-weight: bold;
+      color: white;
+      background-color: MediumOrchid;
+      vertical-align: sub;
+    }
+    .right {
+      float: right;
+    }
+    .low .webix_slider_left{
+      color:red;
+      background-color: red ;
+    }
+    .med .webix_slider_left{
+      color:orange;
+      background-color: orange ;
+    }
+    .high .webix_slider_left{
+      color:green;
+      background-color: #27AE60;
+    }
+  </style>
+  <style>html,body{ height:100%; padding:0px; margin:0px;}</style>
+   <body>
+      <div id='layout_div'></div>
+      <div id="oracleLogo" style='display:none;'>
+        <img id="oracleLogoImg" align="middle" src="img/oracle_logo_white.png">
+      </div>
+      <div id="title" style='display:none;'>
+        <span class="topHeader">Realtime Healthcare Data Entry</span>
+      </div>
+      <div id="zerintiaLogo" style='display:none;'>
+        <img id="zerintiaLogoImg" align="middle" height=40px src="img/logo-zerintia.png">
+      </div>
+      <div id="working" style='display:none;'>
+        <i class="fa fa-refresh fa-spin right"></i>
+      </div>
+      <script type="text/javascript" charset="utf-8">
+
+        // Prototypes
+        Number.prototype.between = function (max, min) {
+          return this > min && this < max;
+        };
+
+        // Constants and global variables
+        var version = "v1.1.0";
+        var restServer = "http://oraclewearable.ddns.net:8080";
+//        var restServer = "http://bpm12c:7777";
+        var ISODateFormat = "%c";
+        var jsDateFormat = "%d/%m/%Y %H:%i:%s";
+        var patientData = {};
+        var patientTreatment = {};
+        var deviceInformation = {};
+        var devices;
+        var deviceList = [];
+        var selectedDevice = {};
+        var selectDeviceHint = "-- Select your device --";
+        var lastKnownLocationTimestamp;
+        // Keep track of editing due to Webix bug
+        var editing = false;
+
+        function about() {
+          webix.modalbox({
+              title:"About",
+              width: 360,
+              buttons:["Close"],
+              text: "<h2>Realtime Healthcare Data Entry Sample Application</h2><p><h3><b>" + version + "</b><p></h3>Author: Carlos Casares (carlos.casares@oracle.com)<p>"
+          });
+        }
+
+        function reset() {
+          webix.confirm({
+            title:"Reset Communications",
+            ok:"Yes",
+            cancel:"No",
+            type:"confirm-error",
+            text:"You are about to reset communication server. Make sure to FIRST close any dashboard and wearable application. Are you sure you want to proceed?",
+            callback:function(result) {
+              if (result) {
+                var url = restServer + "/websocketsmulti/console/reset";
+                var xmlHttp = new XMLHttpRequest();
+                    xmlHttp.onreadystatechange = function() {
+                        if (xmlHttp.readyState == 4 && xmlHttp.status == 200) {
+                          var result;
+                          if ( xmlHttp.responseText == "RESET OK") {
+                            result = "Communications reset successfully";
+                          } else {
+                            result = "Error while trying to reset communications";
+                          }
+                          webix.message(result);
+                        }
+                    }
+                xmlHttp.open("GET", url, true); // true for asynchronous
+                xmlHttp.send(null);
+              }
+            }
+          });
+        }
+
+        function clearDeviceInfo() {
+          $$("model").setValue("n/a");
+          $$("serial").setValue("n/a");
+          $$("battery").setValue("-1");
+          $$("seeInMap").setValue("");
+          $$("seeInMap").disable();
+          $$("lastseenat").setValue("n/a");
+          $$("deviceMessageType").disable();
+          $$("deviceMessage").setValue("");
+          $$("deviceMessage").disable();
+          $$("deviceMessageSend").disable();
+        }
+
+        function refreshDeviceInfo() {
+          $$("tWorking").show();
+          webix.ajax().get(restServer + "/DataServicesMulti/GetInfoRequestService/inforequest/" + selectedDevice.imei).then(function(data) {
+            $$("tWorking").hide();
+            deviceInformation = data.json();
+            if ( deviceInformation.model) {
+              $$("model").setValue(deviceInformation.model);
+              $$("serial").setValue(deviceInformation.serial);
+              $$("battery").setValue(deviceInformation.battery);
+              var dateFormat = "%d/%m/%Y %H:%i:%s";
+              var parser = webix.Date.strToDate("%c");
+              var date = parser(deviceInformation.location.timestamp.slice(0,deviceInformation.location.timestamp.indexOf("+")));
+              var format = webix.Date.dateToStr(dateFormat);
+              lastKnownLocationTimestamp = format(date);
+              $$("lastseenat").setValue(lastKnownLocationTimestamp);
+              $$("seeInMap").setValue("<a href='javascript:void(0)'>See in Map</a>");
+              $$("seeInMap").enable();
+              $$("deviceMessageType").enable();
+              $$("deviceMessage").enable();
+              $$("deviceMessageSend").enable();
+            } else {
+              clearDeviceInfo();
+              webix.alert({
+                title:"Error Getting Device Information",
+                ok:"Close",
+                type:"error",
+                text: deviceInformation.result + ": " + deviceInformation.detail
+              });
+            }
+          }).fail(function(err) {
+            $$("tWorking").hide();
+            clearDeviceInfo();
+            var errorText = "Unknown error";
+            if ( err) {
+              if ( err.status !== 0 && err.statusText !== "")
+                errorText = err.status + ": " + err.statusText;
+            }
+            webix.alert({
+              title:"Error Getting Device Information",
+              ok:"Close",
+              type:"error",
+              text: errorText
+            });
+          });
+        }
+
+        function setBatteryColor() {
+          var value = 0;
+          value = this.getValue();
+          var css = "";
+          if (value >= 75 && value <= 100)
+            css = "high";
+          else if (value >= 25 && value < 75)
+            css = "med";
+          else if (value >= 0 && value < 25)
+            css = "low";
+          else
+            css = "low";
+          if(this.myCss)
+            webix.html.removeCss(this.$view, " "+this.myCss);
+          this.myCss = css;
+          webix.html.addCss(this.$view, " "+css, true);
+        }
+
+        function clearAll() {
+          clearPatientData();
+          clearAllTreatmentData();
+        }
+
+        function clearPatientData() {
+          $$("patientForm").clear();
+          $$("contactForm").clear();
+          // Set Default values
+          $$("contactForm").setValues({
+              isPrimary: 1,
+              contactType: 1
+          });
+        }
+
+        function clearAllTreatmentData() {
+          $$("prescriptionDetailsTableId").clearAll();
+          $$("treatmentStepsTableId").clearAll();
+          $$("tratamientoTableId").clearAll();
+          $$("prescriptionDetailsTableId").refreshColumns([{ id:"dummy",	header:"", fillspace:true}]);
+          $$("prescriptionDetailsTableId").refresh();
+          $$("treatmentStepsTableId").refresh();
+          $$("tratamientoTableId").refresh();
+          $$("synchronizeTreatmentButton").disable();
+          $$("refreshTreatment").disable();
+          $$("sendTreatment").disable();
+          $$("setRandom").disable();
+          $$("saveSteps").disable();
+        }
+
+        function fixDate(sourceFormat, targetFormat, strDate) {
+          var sourceParser = webix.Date.strToDate(sourceFormat);
+          if ( strDate.indexOf("+") !== -1)
+            strDate = strDate.slice(0,strDate.indexOf("+"));
+          var fixedSourceDate = sourceParser(strDate);
+          var targetFormat = webix.Date.dateToStr(targetFormat);
+          return targetFormat(fixedSourceDate);
+        }
+
+        function fixTreatmentDates(sourceFormat, targetFormat, p) {
+          for ( s in p.steps) {
+            for ( d in p.steps[s].details) {
+              if ( p.steps[s].details[d].startDate)
+                p.steps[s].details[d].startDate = fixDate(sourceFormat, targetFormat, p.steps[s].details[d].startDate);
+              if ( p.steps[s].details[d].endDate)
+                p.steps[s].details[d].endDate = fixDate(sourceFormat, targetFormat, p.steps[s].details[d].endDate);
+              if ( p.steps[s].details[d].deadline)
+                p.steps[s].details[d].deadline = fixDate(sourceFormat, targetFormat, p.steps[s].details[d].deadline);
+            }
+          }
+        }
+
+        function doReloadTreatment(patientId) {
+          clearAllTreatmentData();
+          $$("tWorking").show();
+          webix.ajax().get(restServer + "/DataServicesMulti/GetTreatmentService/treatment/" + patientId).then(function(data) {
+            $$("tWorking").hide();
+            patientTreatment = data.json();
+            fixTreatmentDates(ISODateFormat, jsDateFormat, patientTreatment);
+            $$("tratamientoTableId").hideColumn("treatmentId");
+            $$("tratamientoTableId").add({ treatmentId: patientTreatment.treatmentId, Description: patientTreatment.description}, 0);
+            $$("refreshTreatment").enable();
+            $$("synchronizeTreatmentButton").enable();
+            $$("prescriptionDetailsTableId").dirty = false;
+            $$("prescriptionDetailsTableId").dirtyChanges = 0;
+            IsPrescriptionDetailsDirty();
+          })
+          .fail(function(err) {
+            $$("tWorking").hide();
+            var errorText = "Unknown error";
+            if ( err) {
+              if ( err.status !== 0 && err.statusText !== "")
+                errorText = err.status + ": " + err.statusText;
+            }
+            webix.alert({
+              title:"Error Loading Treatment",
+              ok:"Close",
+              type:"error",
+              text: errorText
+            });
+            $$("refreshTreatment").enable();
+          });
+        }
+
+        function reloadTreatment(patientId) {
+          if ( $$("prescriptionDetailsTableId").dirty) {
+            webix.confirm({
+              title:"Reload Treatment Data",
+              ok:"Yes",
+              cancel:"No",
+              type:"confirm-error",
+              text:"There are unsaved changes in the treatment<p>Are you sure you want to proceed?",
+              callback:function(result){ //setting callback
+                if (result) {
+                  doReloadTreatment(patientId);
+                }
+              }
+            });
+          } else {
+            doReloadTreatment(patientId);
+          }
+        }
+
+        function getNow() {
+          var now = new Date();
+          var month      = (  now.getMonth() < 10) ? "0" + now.getMonth() : now.getMonth();
+          var day        = (   now.getDate() < 10) ? "0" + now.getDate() : now.getDate();
+          var hour       = (  now.getHours() < 10) ? "0" + now.getHours() : now.getHours();
+          var minute     = (now.getMinutes() < 10) ? "0" + now.getMinutes() : now.getMinutes();
+          var second     = (now.getSeconds() < 10) ? "0" + now.getSeconds() : now.getSeconds();
+          var offset = Math.abs(now.getTimezoneOffset() / 60);
+          var timezone = (offset < 10) ? "0" + offset : offset;
+          timezone += ":00";
+          return now.getFullYear() + "-" + month + "-" + day + "T" + hour + ":" + minute + ":" + second + "." + "000" + "+" + timezone;
+        }
+
+        function synchronizeTreatment() {
+
+          var request = { id : patientData.id, imei: patientData.IMEI, timestamp: getNow() };
+          $$("tWorking").show();
+          webix.ajax().headers({
+              "Content-type":"application/json"
+          }).post(restServer + "/DataServicesMulti/SynchTreatmentService/synch", JSON.stringify(request), function(text, data, xhr){
+            $$("tWorking").hide();
+            var response = data.json();
+            if ( response.result !== 0) {
+              webix.alert({
+                title:"Error Synchronizing Treatment",
+                ok:"Close",
+                type:"error",
+                text: response.result + ": " + response.detail
+              });
+            } else {
+              webix.message({type:"default", text:"Treatment synchronized successfully"});
+            }
+          }).fail(function(err) {
+            $$("tWorking").hide();
+            var errorText = "Unknown error";
+            if ( err) {
+              if ( err.status !== 0 && err.statusText !== "")
+                errorText = err.status + ": " + err.statusText;
+            }
+            webix.alert({
+              title:"Error Synchronizing Treatment",
+              ok:"Close",
+              type:"error",
+              text: errorText
+            });
+          });
+        }
+
+        function setPatientFields(enabled) {
+          var e = ["name","surname","contactType","contactDetail","contactRelationship","refreshPatient","deletePatient","savePatient","refreshDevice"];
+          for (var i = 0; i < e.length; i++) {
+              if ( enabled)
+                $$(e[i]).enable();
+              else
+                $$(e[i]).disable();
+          }
+        }
+
+        function loadPatientBasedOnDevice(id) {
+          $$("prescriptionDetailsTableId").dirty = false;
+          $$("prescriptionDetailsTableId").dirtyChanges = 0;
+          IsPrescriptionDetailsDirty();
+          clearDeviceInfo();
+          $$("refreshPatient").disable();
+          $$("deletePatient").disable();
+          $$("savePatient").disable();
+
+          var selected = deviceList[id-1].value;
+          if ( selected === selectDeviceHint) {
+            clearAll();
+            selectedDevice = {};
+            setPatientFields(false);
+          } else {
+            // Valid device selected. Let's try to get the patient associated to it, if any
+            $$("tWorking").show();
+            selectedDevice = deviceList[id-1];
+            webix.ajax().get(restServer + "/DataServicesMulti/GetPatientByIMEI/getpatientbyimei", { imei: selectedDevice.imei } ).then(function(data) {
+              clearAll();
+              $$("tWorking").hide();
+              setPatientFields(true);
+              patient = data.json();
+
+//              console.log(JSON.stringify(patient));
+
+              if ( patient === null) {
+                webix.alert({
+                  title:"Patient Data",
+                  ok:"Close",
+                  type:"warning",
+                  text: "No patient data found associated to device '" + selectedDevice.value + "'. Please, enter new information and save it",
+                  callback: function() {
+                    $$("name").focus();
+                  }
+                });
+              } else {
+                // Let's fill up the shared structure "patientData"
+                patientData = {
+                  id: patient.Patient[0].userid,
+                	name: patient.Patient[0].name,
+                	surname: patient.Patient[0].surname,
+                	phone: ( patient.Patient[0].phoneNumber['@nil'] === "true") ? null : patient.Patient[0].phoneNumber,
+                  IMEI: selectedDevice.imei,
+                	contacts: [
+                		{ type: patient.Patient[0].contactsCollection.Contacts[0].type,
+                		  isPrimary: patient.Patient[0].contactsCollection.Contacts[0].isprimary === "true",
+                		  detail: patient.Patient[0].contactsCollection.Contacts[0].contactDetail,
+                		  relationship: patient.Patient[0].contactsCollection.Contacts[0].relationship
+                		}
+                	]
+                };
+
+                $$("patientForm").setValues({
+                    name: patientData.name,
+                    surname: patientData.surname
+                });
+                var contactTypeId = 0;
+                switch (patientData.contacts[0].type) {
+                  case "Mobile": contactTypeId = 1; break;
+                  case "Fixed Line": contactTypeId = 2; break;
+                  case "E-Mail": contactTypeId = 3; break;
+                  case "Emergency": contactTypeId = 4; break;
+                  default: break;
+                }
+                $$("contactForm").setValues({
+                    isPrimary: patientData.contacts[0].isPrimary,
+                    contactType: contactTypeId,
+                    contactDetail: patientData.contacts[0].detail,
+                    contactRelationship: patientData.contacts[0].relationship
+                });
+                $$("refreshTreatment").enable();
+              }
+            }).fail(function(err) {
+              $$("tWorking").hide();
+              var errorText = "Unknown error";
+              if ( err) {
+                if ( err.status !== 0 && err.statusText !== "")
+                  errorText = err.status + ": " + err.statusText;
+              }
+              errorText += "<p><b>Refresh page to retry again</b><p>";
+              webix.alert({
+                title:"Error loading patient for device " + selected,
+                ok:"Close",
+                type:"error",
+                text: errorText
+              });
+            });
+          }
+        }
+
+        function loadDeviceList() {
+          $$("tWorking").show();
+          setPatientFields(false);
+          webix.ajax().get(restServer + "/DataServicesMulti/GetDevicesService/getdevices").then(function(data) {
+            $$("tWorking").hide();
+            // Clear the forms and set the default values just in case the request returned empty data
+            devices = data.json();
+            // {"Devices":[{"imei":"355062061099959","name":"Oracle","enabled":"Y"},{"imei":"1","name":"Zerintia1","enabled":"Y"},{"imei":"2","name":"Zerintia2","enabled":"Y"}]}
+
+            deviceList = [];
+            deviceList.push({ id: 1, value: selectDeviceHint });
+
+            for (var i = 0, len = devices.Devices.length; i < len; i++) {
+              deviceList.push({ id: i + 2, value: devices.Devices[i].name, imei: devices.Devices[i].imei });
+            };
+
+            $$("patientForm").addView(
+              { view:"select", label:"Device", inputAlign:"left", id: "devices", required: true, labelWidth:120, value:1, options: deviceList, on: {
+                  onChange:function(newv, oldv) {
+                    if ( $$("prescriptionDetailsTableId").dirty) {
+                      webix.confirm({
+                        title:"Changing Patient",
+                        ok:"Yes",
+                        cancel:"No",
+                        type:"confirm-error",
+                        text:"There are unsaved changes in the treatment<p>Are you sure you want to proceed?",
+                        callback:function(result){ //setting callback
+                          if (result) {
+                            loadPatientBasedOnDevice(newv);
+                          } else {
+                            // Revert to previous value
+                            $$("devices").blockEvent();
+                            $$("devices").setValue(oldv);
+                            $$("devices").unblockEvent();
+                          }
+                        }
+                      });
+                    } else {
+                      loadPatientBasedOnDevice(newv);
+                    }
+  								}
+                }
+              }
+            );
+          }).fail(function(err) {
+            $$("tWorking").hide();
+            var errorText = "Unknown error";
+            if ( err) {
+              if ( err.status !== 0 && err.statusText !== "")
+                errorText = err.status + ": " + err.statusText;
+            }
+            errorText += "<p><b>Refresh page to retry again</b><p>";
+            webix.alert({
+              title:"Error Loading Device List",
+              ok:"Close",
+              type:"error",
+              text: errorText
+            });
+          });
+        }
+
+        function loadPatientData() {
+          var selectedDevice = $$("devices").getValue();
+          if ( $$("prescriptionDetailsTableId").dirty) {
+            webix.confirm({
+              title:"Reload Patient Data",
+              ok:"Yes",
+              cancel:"No",
+              type:"confirm-error",
+              text:"There are unsaved changes in the treatment<p>Are you sure you want to proceed?",
+              callback:function(result){ //setting callback
+                if (result) {
+                  loadPatientBasedOnDevice(selectedDevice);
+                }
+              }
+            });
+          } else {
+            loadPatientBasedOnDevice(selectedDevice);
+          }
+        }
+
+        function savePatientData() {
+          var resultForPatient = $$("patientForm").validate();
+          var resultForContact = $$("contactForm").validate();
+          if ( !resultForPatient || !resultForContact) {
+            webix.alert({
+              title:"Save Patient Data",
+              ok:"OK",
+              type:"warning",
+              text: "Missing data. Please enter data for all highlighted fields"
+            });
+          } else {
+            $$("tWorking").show();
+            var patientFormData = $$("patientForm").getValues();
+            var contactFormData = $$("contactForm").getValues();
+            contactType = [ "Mobile", "Fixed Line", "E-Mail", "Emergency" ];
+            patientData = {
+            	name: patientFormData.name,
+            	surname: patientFormData.surname,
+            	phone: patientFormData.phone,
+              IMEI: selectedDevice.imei,
+            	contacts: [
+            		{ type: contactType[ parseInt(contactFormData.contactType) - 1],
+            		  isPrimary: (contactFormData.isPrimary === 1),
+            		  detail: contactFormData.contactDetail,
+            		  relationship: contactFormData.contactRelationship
+            		}
+            	]
+            };
+
+            webix.ajax().headers({
+                "Content-type":"application/json"
+            }).post(restServer + "/DataServicesMulti/SavePatientService/save", JSON.stringify(patientData), function(text, data, xhr){
+              $$("tWorking").hide();
+              var response = data.json();
+              if ( response.result <= 0) {
+                webix.alert({
+                  title:"Error Sending Message to Device",
+                  ok:"Close",
+                  type:"error",
+                  text: response.result + ": " + response.detail
+                });
+              } else {
+                webix.message({type:"default", text:"Patient data saved successfully"});
+                patientData.id = response.result;
+
+                console.log(patientData.id);
+
+                $$("refreshTreatment").enable();
+              }
+            }).fail(function(err) {
+              $$("tWorking").hide();
+              var errorText = "Unknown error";
+              if ( err) {
+                if ( err.status !== 0 && err.statusText !== "")
+                  errorText = err.status + ": " + err.statusText;
+              }
+              webix.alert({
+                title:"Error Sending Message to Device",
+                ok:"Close",
+                type:"error",
+                text: errorText
+              });
+            });
+          }
+        }
+
+        function saveTreatment() {
+
+          // First we need to change dateTime format
+          var patientTreatmentFixed = (JSON.parse(JSON.stringify(patientTreatment)));
+          fixTreatmentDates(jsDateFormat, ISODateFormat, patientTreatmentFixed);
+          $$("tWorking").show();
+          webix.ajax().headers({
+              "Content-type":"application/json"
+          }).post(restServer + "/DataServicesMulti/UpdateTreatmentService/update", JSON.stringify(patientTreatmentFixed), function(text, data, xhr){
+            $$("tWorking").hide();
+            var response = data.json();
+            if ( response.result !== 0) {
+              webix.alert({
+                title:"Error Saving Treatment",
+                ok:"Close",
+                type:"error",
+                text: response.result + ": " + response.detail
+              });
+            } else {
+              webix.message({type:"default", text:"Treatment successfully saved"});
+              var pdt = $$("prescriptionDetailsTableId");
+              pdt.dirty = false;
+              pdt.dirtyChanges = 0;
+              IsPrescriptionDetailsDirty();
+              var selectedTreatment = $$("treatmentStepsTableId").getSelectedItem();
+              if (selectedTreatment.Type !== "Medication")
+                $$("sendTreatment").enable();
+            }
+          }).fail(function(err) {
+            $$("tWorking").hide();
+            var errorText = "Unknown error";
+            if ( err) {
+              if ( err.status !== 0 && err.statusText !== "")
+                errorText = err.status + ": " + err.statusText;
+            }
+            webix.alert({
+              title:"Error Saving Treatment",
+              ok:"Close",
+              type:"error",
+              text: errorText
+            });
+          });
+        }
+
+        function setDate() {
+          var dateFormat = "%d/%m/%Y %H:%i:%s";
+          var format = webix.Date.dateToStr(dateFormat);
+          var selectedStep = $$("treatmentStepsTableId").getSelectedItem().Type;
+          var pdt = $$("prescriptionDetailsTableId");
+          var now = new Date();
+          now.setSeconds(now.getSeconds() + 30);
+          pdt.eachRow(function(row) {
+            switch (selectedStep) {
+              case "Medication":
+                pdt.getItem(row).startDate = format(now);
+                now.setSeconds(now.getSeconds() + 10);
+                pdt.getItem(row).endDate = format(now);
+                now.setSeconds(now.getSeconds() + 20);
+                pdt.refresh();
+              break;
+              case "Step Monitor":
+                now.setSeconds(now.getSeconds() + 60);
+                pdt.getItem(row).deadline = format(now);
+                pdt.refresh();
+              break;
+              case "Pulse Monitor":
+              case "Blood Pressure Monitor":
+                now.setHours(now.getHours() + 1);
+                pdt.getItem(row).deadline = format(now);
+                pdt.refresh();
+              break;
+              default:
+              break;
+            }
+          });
+          pdt.dirty = true;
+          pdt.dirtyChanges++;
+          IsPrescriptionDetailsDirty();
+        }
+
+        function sendMessage(severity, message) {
+          var sevText = [ "INFO", "WARNING", "ERROR" ];
+
+          $$("tWorking").show();
+          webix.ajax().headers({
+              "Content-type":"application/json"
+          }).post(restServer + "/DataServicesMulti/SendMessageService/sendmessage", JSON.stringify({ IMEI: selectedDevice.imei, severity: sevText[severity-1], message: message }), function(text, data, xhr){
+            $$("tWorking").hide();
+            var response = data.json();
+            if ( response.result === 0) {
+              webix.message({type:"default", text:"Message successfully sent to device"});
+            } else {
+              webix.alert({
+                title:"Error Sending Message to Device",
+                ok:"Close",
+                type:"error",
+                text: response.result + ": " + response.detail
+              });
+            }
+          }).fail(function(err) {
+            $$("tWorking").hide();
+            var errorText = "Unknown error";
+            if ( err) {
+              if ( err.status !== 0 && err.statusText !== "")
+                errorText = err.status + ": " + err.statusText;
+            }
+            webix.alert({
+              title:"Error Sending Message to Device",
+              ok:"Close",
+              type:"error",
+              text: errorText
+            });
+          });
+        }
+
+        function sendTreatment() {
+          var selectedTreatment = $$("treatmentStepsTableId").getSelectedItem();
+          var selectedStep = patientTreatment.steps.filter(function( s ) {
+            return s.stepId == selectedTreatment.stepId;
+          });
+
+          var request = {};
+          request.imei = selectedDevice.imei;
+          request.stepType = selectedStep[0].type,
+          request.stepId = selectedStep[0].stepId
+          request.targetDistance = selectedStep[0].details[0].target;
+          var deadline = selectedStep[0].details[0].deadline;
+          var sourceParser = webix.Date.strToDate(jsDateFormat);
+          var targetFormat = webix.Date.dateToStr(ISODateFormat);
+          request.deadline = targetFormat(sourceParser(deadline));
+
+          $$("tWorking").show();
+          webix.ajax().headers({
+              "Content-type":"application/json"
+          }).post(restServer + "/DataServicesMulti/SendSingleTreatmentService/send", JSON.stringify(request), function(text, data, xhr){
+            $$("tWorking").hide();
+            var response = data.json();
+            if ( response.result === 0) {
+              webix.message({type:"default", text:"<b>'" + request.stepType + "'</b> treatment successfully sent to device"});
+            } else {
+              webix.alert({
+                title:"Error Sending Treatment to Device",
+                ok:"Close",
+                type:"error",
+                text: response.result + ": " + response.detail
+              });
+            }
+          }).fail(function(err) {
+            $$("tWorking").hide();
+            var errorText = "Unknown error";
+            if ( err) {
+              if ( err.status !== 0 && err.statusText !== "")
+                errorText = err.status + ": " + err.statusText;
+            }
+            webix.alert({
+              title:"Error Sending Treatment to Device",
+              ok:"Close",
+              type:"error",
+              text: errorText
+            });
+          });
+        }
+
+        function IsPrescriptionDetailsDirty() {
+          var pdt = $$("prescriptionDetailsTableId");
+          var pdl = $$("prescriptionDetailsLabel");
+          var idy = $$("isDirty");
+          var st  = $$("sendTreatment");
+          var sat = $$("saveSteps");
+
+          if ( pdt.dirty) {
+            idy.show();
+            idy.config.badge = pdt.dirtyChanges;
+            idy.refresh();
+            pdl.refresh();
+            st.disable();
+            sat.enable();
+          } else {
+            idy.hide();
+            pdl.refresh();
+            sat.disable();
+          }
+        }
+
+        var deviceInfo = [
+          { rows: [
+            { cols: [
+              { view:"label", css: "midHeader", label: "Device Information", width: 287},
+              { view:"button", type:"icon", id:"refreshDevice", icon:"refresh", css:"webix_icon", label:"Refresh", disabled:true, width:80,
+                click:refreshDeviceInfo
+              }
+            ]},
+            { cols: [
+              { cols: [
+                { view:"label", css:"bold", label: "Model:", width:50},
+                { view:"label", id:"model", label: "n/a", width: 120}
+              ]},
+              { cols: [
+                { view:"label", css:"bold", label: "Serial:", width:50},
+                { view:"label", id:"serial", label: "n/a", width: 149}
+              ]}
+            ]},
+            { cols: [
+              { view:"label", css:"bold", label: "Battery:", width:65},
+              { view:"slider", id:"battery", value:"-1", name:"s2", disabled:true,
+								title:function(obj){
+                  var title = (obj.value == -1) ? "n/a" : obj.value + "%";
+									return title;
+								},
+                on: {
+                     onAfterRender: setBatteryColor,
+                     onSliderDrag: setBatteryColor,
+                     onChange: setBatteryColor
+                  }
+              }
+            ]},
+            { cols: [
+              { view:"label", css:"bold", label: "Location:", width:65},
+              { view:"label", id: "seeInMap", label: "", width: 79, disabled:true,
+                on:{
+                    'onItemClick': function(id){
+                      var googlemapsLink = "https://www.google.com/maps/embed/v1/view?key=AIzaSyBldIVP0UVKdJs_HtX-Biyvdi0pL9crIZI&center=" + deviceInformation.location.latitude + "," + deviceInformation.location.longitude + "&zoom=18&maptype=roadmap";
+                      webix.ui({
+                        view:"window", move:true, id:"LocationWindow",
+                        position:"center", move: true, modal: true,
+                        head:{
+                          view:"toolbar", margin:-4, cols:[
+                            { view:"label", label: "Last known patient location (" + lastKnownLocationTimestamp + ")" },
+                            { view:"icon", icon:"times-circle",
+                              click:"$$('LocationWindow').close();"}
+                          ]
+                        },
+                        body:{
+                          rows: [
+                            {
+                              view:"iframe", id:"frame-body", width:700, height: 500, src:googlemapsLink
+                            }
+                          ]
+                        }
+                      }).show();
+                    }
+                }
+              },
+              { view:"label", css:"bold", label: "Last seen at:", width: 85},
+              { view:"label", id: "lastseenat", label: "n/a", width: 140}
+            ]},
+            { cols: [
+              { view:"label", css:"bold", label: "Message:", width:65},
+              { view:"select", id: "deviceMessageType", disabled: true, value: 1, options:[
+        				{ value:"INFO", id:1 },
+                { value:"WARNING", id:2 },
+                { value:"ERROR", id:3 }
+        			] },
+              { view:"text", id: "deviceMessage", disabled: true, placeholder:"Enter a message", inputAlign:"left", width: 200},
+              { view:"button", id: "deviceMessageSend", disabled: true, type:"icon", icon:"envelope-o", width:28, click:function() {
+                  sendMessage($$("deviceMessageType").getValue(), $$("deviceMessage").getValue());
+                }
+              }
+            ]}
+          ]}
+        ];
+
+        var patientForm = [
+          { view:"label", css: "midHeader", label: "Patient Data" },
+          { view:"text", placeholder:"Patient name", name: "name", id: "name", label:"Name", inputAlign:"left", required: true, labelWidth:120, width: 400, invalidMessage: "Field can not be empty" },
+          { view:"text", placeholder:"Patient surname", name: "surname", id: "surname", label:"Surname", inputAlign:"left", required: true, labelWidth:120, width: 400, invalidMessage: "Field can not be empty" }
+        ];
+
+        var contactForm = [
+          { view:"label", css: "midHeader", label: "Contact Data"},
+          { cols: [
+            { view:"checkbox", label:"Is Primary?", name: "isPrimary", readonly: true, labelWidth:120, value: 1},
+            { view:"select", value: 1, label:"Type", name: "contactType", labelWidth: 50, options:[
+      				{ value:"Mobile", id:1 },
+              { value:"Fixed Line", id:2 },
+              { value:"E-Mail", id:3 },
+              { value:"Emergency", id:4 }
+      			] }
+          ]},
+          { view:"text", placeholder:"Enter contact info", name: "contactDetail", label:"Contact Detail", required: true, inputAlign:"left", labelWidth:120, invalidMessage: "Field can not be empty" },
+          { view:"text", placeholder:"Relationship with patient", name: "contactRelationship", label:"Relationship", required: true, inputAlign:"left", labelWidth:120, invalidMessage: "Field can not be empty" }
+        ];
+
+        var columnConfig = [
+          {
+            type: "Medication",
+            config: [
+              { id:"stepDid",	header:"", width:-1},
+              { id:"description",	editor:"text",	header:"Description", width:300, fillspace:true},
+              { id:"startDate",	editor:"text", header:"Start Date", width:155},
+              { id:"endDate",	editor:"text",	header:"End Date", width:155},
+              { id:"state",	header:"State", width:75}
+            ]
+          },
+          {
+            type: "Step Monitor",
+            config: [
+              { id:"stepDid",	header:"", width:-1},
+              { id:"description",	editor:"text",	header:"Description", width:300, fillspace:true},
+              { id:"deadline",	editor:"text",	header:"Deadline", width:155},
+              { id:"target",	editor:"text",	header:"Target", width:75},
+              { id:"state",	header:"State", width:75}
+            ]
+          },
+          {
+            type: "Pulse Monitor",
+            config: [
+              { id:"stepDid",	header:"", width:-1},
+              { id:"description",	editor:"text",	header:"Description", width:300, fillspace:true},
+              { id:"deadline",	editor:"text",	header:"Deadline", width:155},
+              { id:"state",	header:"State", width:75}
+            ]
+          },
+          {
+            type: "Blood Pressure Monitor",
+            config: [
+              { id:"stepDid",	header:"", width:-1},
+              { id:"description",	editor:"text",	header:"Description", width:300, fillspace:true},
+              { id:"deadline",	editor:"text",	header:"Deadline", width:155},
+              { id:"state",	header:"State", width:75}
+            ]
+          }
+        ];
+
+        var tratamientoTable = {
+          id: "tratamientoTableId",
+          view:"datatable",
+          autoheight:true,
+          autowidth:true,
+          select: "row",
+          on: {
+             onAfterSelect: function () {
+               var selectedTreatment = this.getSelectedItem();
+               $$("treatmentStepsTableId").hideColumn("stepId");
+               for ( i in patientTreatment.steps)
+                 $$("treatmentStepsTableId").add({ stepId: patientTreatment.steps[i].stepId, Type: patientTreatment.steps[i].type}, patientTreatment.steps.length);
+             }
+          },
+          columns:[
+            { id:"treatmentId",	header:"", width:-1},
+            { id:"Description",	header:"Descriptions", width:300}
+          ]
+        };
+
+        var treatmentStepsTable = {
+           id:"treatmentStepsTableId",
+           view:"datatable",
+           autoheight:true,
+           autowidth:true,
+           select: "row",
+           on: {
+             onBeforeSelect: function (data, preserve) {
+               if (editing) {
+                 editing = false;
+                 $$("prescriptionDetailsTableId").editCancel();
+               }
+             },
+              onAfterSelect: function () {
+                var pdt = $$("prescriptionDetailsTableId");
+                var selectedStep = this.getSelectedItem();
+                (selectedStep.Type === "Medication" || pdt.dirty) ? $$("sendTreatment").disable() : $$("sendTreatment").enable();
+                // Set Columns
+                var stepDetailsConfig = columnConfig.filter(function( obj ) {
+                  return obj.type == selectedStep.Type;
+                });
+                if ( stepDetailsConfig) {
+                  pdt.refreshColumns(stepDetailsConfig[0].config);
+                  pdt.hideColumn("stepDid");
+                }
+                // Add data (if any)
+                var stepDetails = patientTreatment.steps.filter(function( obj ) {
+                  return obj.type == selectedStep.Type;
+                });
+                if ( stepDetails) {
+                  pdt.clearAll();
+                  pdt.parse(stepDetails[0].details, 'json');
+                  $$("setRandom").enable();
+                  if (pdt.dirty)
+                    $$("saveSteps").enable();
+                } else {
+                  $$("setRandom").disable();
+                  $$("saveSteps").disable();
+                }
+              }
+           },
+           columns:[
+              { id:"stepId",	header:"", width:-1},
+              { id:"Type",	header:"Type", width:350}
+           ]
+        };
+
+        var prescriptionDetailsTable = {
+            id:"prescriptionDetailsTableId",
+            view:"datatable",
+            dirty: false,
+            dirtyChanges: 0,
+            scrollY:false,
+            scrollX:false,
+            editable:true,
+    				editaction:"click",
+            on: {
+              onAfterEditStart: function(id) {
+                editing = true;
+              },
+              onAfterEditStop: function(state, editor, ignoreUpdate) {
+                if ( !editing) {
+                  // Edit has been cancelled through API
+                  // BUG: changes are not reflected in the data, thus we don't set the dirty flag & count
+                  // Do nothing
+                } else {
+                  editing = false;
+                  if(state.value != state.old){
+                    ignoreUpdate = true;
+                    this.dirty = true;
+                    this.dirtyChanges++;
+                    IsPrescriptionDetailsDirty();
+                  }
+                }
+              }
+            },
+            columns:[
+               { id:"dummy",	header:"", fillspace:true}
+            ]
+        };
+
+        webix.ready( function() {
+          webix.event("oracleLogoImg", "dblclick", function() {
+            about();
+          });
+          webix.event("zerintiaLogoImg", "dblclick", function() {
+            reset();
+          });
+          loadDeviceList();
+        });
+
+        webix.ui({
+           container:"layout_div",
+           id:"layout",
+           width:"auto",
+           rows:[
+               { view: "toolbar", height: 60, type: "header", cols: [
+                 { template:"html->oracleLogo", css:"topHeader", borderless: true, width: 230},
+                 { template:"html->zerintiaLogo", css:"topHeader", borderless: true, width: 180},
+                 { template:"html->title", css:"topHeader", borderless: true},
+                 { template:"html->working", id: "tWorking", hidden: true, css:"topHeaderRight", borderless: true}
+               ]},
+               {cols:[
+                 {
+                     view:"toolbar",
+                     id:"wearableAdminToolbar",
+                     width:400,
+                     cols:[
+                       { view:"label", label:"Wearable Administration"},
+                       { view:"button", id: "synchronizeTreatmentButton", type:"icon", icon:"download", css:"webix_icon", label:"Synchronize Treatment", disabled: true, width:180,
+                        click: synchronizeTreatment
+                       }
+                     ]
+                   },
+                   {
+        							view:"toolbar",
+        							id:"patientToolbar",
+        							cols:[
+        								{ view:"label", label:"Patient Info"},
+                        { view:"button", type:"icon", id:"refreshPatient", icon:"refresh", css:"webix_icon", label:"Refresh", disabled:false, width:80, click: loadPatientData },
+                        { view:"button", type:"icon", id:"deletePatient", icon:"trash-o", css:"webix_icon", label:"Delete", width:75,
+                          click:function() {
+                            webix.confirm({
+                              title:"Reset all Patient Data",
+                              ok:"Yes",
+                              cancel:"No",
+                              type:"confirm-error",
+                              text:"You are about to delete ALL patient data for device <b>" + selectedDevice.value + "</b>. Are you sure you want to proceed?",
+                              callback:function(result) { //setting callback
+                                if (result) {
+                                  $$("tWorking").show();
+                                  console.log(selectedDevice.imei);
+                                  webix.ajax().del(restServer + "/DataServicesMulti/DeletePatientService/deletepatient/" + selectedDevice.imei).then(function(data) {
+                                    $$("tWorking").hide();
+                                    clearAll();
+                                  }).fail(function(err) {
+                                    $$("tWorking").hide();
+                                    var errorText = "Unknown error";
+                                    if ( err) {
+                                      if ( err.status !== 0 && err.statusText !== "")
+                                        errorText = err.status + ": " + err.statusText;
+                                    }
+                                    webix.alert({
+                                      title:"Error Deleting Patient",
+                                      ok:"Close",
+                                      type:"error",
+                                      text: errorText
+                                    });
+                                  });
+                                }
+                              }
+                            });
+                          }
+                        },
+        								{ view:"button", type:"icon", id:"savePatient", icon:"save", css:"webix_icon", label:"Save", width:65,
+                          click: savePatientData
+                        }
+        							]
+        					 }
+               ]},
+               {cols:[
+                 { view:"form", id: "deviceInfo", elements: deviceInfo },
+                 { view:"form", id: "patientForm", elements: patientForm },
+                 { view:"form", id: "contactForm", elements: contactForm }
+               ]},
+               {cols:[
+                 {
+                   view:"toolbar",
+                   id:"treatmentToolbar",
+                   width:300,
+                   cols:[
+                     { view:"label", label:"Treatment"},
+                     { view:"button", type:"icon", id:"refreshTreatment", icon:"refresh", css:"webix_icon", label:"Refresh", disabled:true, width:80, click: function() {
+                       reloadTreatment(patientData.id);
+                     }}
+                   ]
+                 },
+                 {
+                   view:"toolbar",
+                   id:"stepsToolbar",
+                   width:350,
+                   cols:[
+                     { view:"label", label:"Treatment Steps"},
+                     { view:"button", type:"icon", id:"sendTreatment", icon:"download", css:"webix_icon", disabled:true, label:"Send Treatment", width:140,
+                      click: sendTreatment
+                     }
+                   ]
+                 },
+                 {
+                   view:"toolbar",
+                   id:"stepDetailsToolbar",
+                   width: "100%",
+                   cols:[
+                     { view:"label", id: "prescriptionDetailsLabel", label: "Prescription Details"},
+                     { view:"icon", icon: 'exclamation-triangle', id: "isDirty", align: "left", width: 50, hidden: true, badge: 0, disabled: true },
+                     { view:"button", id:"setRandom", type:"icon", icon:"clock-o", css:"webix_icon", disabled:true, label: "Set Date", width:85, click:setDate },
+                     { view:"button", id: "saveSteps", type:"icon", icon:"save", css:"webix_icon", disabled:true, label:"Save", width:65,
+                      click: saveTreatment
+                     }
+                   ]
+                 }
+               ]},
+             {cols:[
+                tratamientoTable,
+                treatmentStepsTable,
+                prescriptionDetailsTable
+             ]}
+           ]
+        }).show();
+
+       </script>
+   </body>
+</html>
